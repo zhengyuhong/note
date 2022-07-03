@@ -41,7 +41,7 @@ Raft 针对这种场景的办法是 Read Index 和 Lease Read 两种机制
 
 虽然采用 lease 的做法很高效，但仍然会面临风险问题，也就是我们有了一个预设的前提，各个服务器的 CPU clock 的时间是准的，即使有误差，也会在一个非常小的 bound 范围里面，如果各个服务器之间 clock 走的频率不一样，有些太快，有些太慢，这套 lease 机制就可能出问题。
 
-## concept
+## Concept
 
 - Revision 版本号，作为 etcd 数据的逻辑时钟
 
