@@ -2,6 +2,28 @@
 
 etcd server has proven its robustness with years of failure injection testing. Most complex application logic is already handled by etcd server and its data stores (e.g. cluster membership is transparent to clients, with Raft-layer forwarding proposals to leader). Although server components are correct, its composition with client requires a different set of intricate（错综复杂的）protocols to guarantee its correctness and high availability under faulty conditions. Ideally, etcd server provides one logical cluster view of many physical machines, and client implements automatic failover between replicas（客户端在副本之间实现自动故障切换）. This documents client architectural decisions and its implementation details.
 
+## Glossary
+
+*clientv3*: etcd Official Go client for etcd v3 API.
+
+*clientv3-grpc1.0*: Official client implementation, with [`grpc-go v1.0.x`](https://github.com/grpc/grpc-go/releases/tag/v1.0.0), which is used in latest etcd v3.1.
+
+*clientv3-grpc1.7*: Official client implementation, with [`grpc-go v1.7.x`](https://github.com/grpc/grpc-go/releases/tag/v1.7.0), which is used in latest etcd v3.2 and v3.3.
+
+*clientv3-grpc1.23*: Official client implementation, with [`grpc-go v1.23.x`](https://github.com/grpc/grpc-go/releases/tag/v1.23.0), which is used in latest etcd v3.4.
+
+*Balancer*: etcd client load balancer that implements retry and failover mechanism. etcd client should automatically balance loads between multiple endpoints.
+
+*Endpoints*: A list of etcd server endpoints that clients can connect to. Typically, 3 or 5 client URLs of an etcd cluster.
+
+*Pinned endpoint*: When configured with multiple endpoints, <= v3.3 client balancer chooses only one endpoint to establish a TCP connection, in order to conserve total open connections to etcd cluster. In v3.4, balancer round-robins pinned endpoints for every request, thus distributing loads more evenly.
+
+*Client Connection*: TCP connection that has been established to an etcd server, via gRPC Dial.
+
+*Sub Connection*: gRPC SubConn interface. Each sub-connection contains a list of addresses. Balancer creates a SubConn from a list of resolved addresses. gRPC ClientConn can map to multiple SubConn (e.g. example.com resolves to `10.10.10.1` and `10.10.10.2` of two sub-connections). etcd v3.4 balancer employs internal resolver to establish one sub-connection for each endpoint.
+
+*Transient disconnect*: When gRPC server returns a status error of [`code Unavailable`](https://godoc.org/google.golang.org/grpc/codes#Code).
+
 ## Client Requirements
 
 *Correctness*. Requests may fail in the presence of server faults. However, it never violates consistency guarantees: global ordering properties, never write corrupted data, at-most once semantics for mutable operations, watch never observes partial events（从不观察局部事件）, and so on.
@@ -52,7 +74,7 @@ Stream RPCs, such as Watch and KeepAlive, are often requested with no timeouts. 
 
 ### clientv3-grpc1.7: Balancer Limitation
 
-`clientv3-grpc1.7` balancer sends HTTP/2 keepalives to detect disconnects from streaming requests. It is a simple gRPC server ping mechanism and does not reason about cluster membership, thus unable to detect network partitions. Since partitioned gRPC server can still respond to client pings, balancer may get stuck with a partitioned node. Ideally, keepalive ping detects partition and triggers endpoint switch, before request time-out (see [etcd#8673](https://github.com/etcd-io/etcd/issues/8673) and *Figure 7*).
+`clientv3-grpc1.7` balancer sends HTTP/2 keepalives to detect disconnects from streaming requests. It is a simple gRPC server ping mechanism and does not reason about cluster membership, thus unable to detect network partitions（脱离集群）. Since partitioned gRPC server can still respond to client pings, balancer may get stuck with a partitioned node. Ideally, keepalive ping detects partition and triggers endpoint switch, before request time-out (see [etcd#8673](https://github.com/etcd-io/etcd/issues/8673) and *Figure 7*).
 
 ![client-balancer-figure-07](client-balancer-figure-07.png)
 
@@ -61,3 +83,25 @@ Stream RPCs, such as Watch and KeepAlive, are often requested with no timeouts. 
 `clientv3-grpc1.0` suffered the same problems above.
 
 ![client-balancer-figure-08](client-balancer-figure-08.png)
+
+Upstream gRPC Go had already migrated to new balancer interface. For example, `clientv3-grpc1.7` underlying balancer implementation uses new gRPC balancer and tries to be consistent with old balancer behaviors. While its compatibility has been maintained reasonably well, etcd client still [suffered from subtle breaking changes](https://github.com/grpc/grpc-go/issues/1649). Furthermore, gRPC maintainer recommends to [not rely on the old balancer interface](https://github.com/grpc/grpc-go/issues/1942#issuecomment-375368665). In general, to get better support from upstream, it is best to be in sync with latest gRPC releases. And new features, such as retry policy, may not be backported to gRPC 1.7 branch. Thus, both etcd server and client must migrate to latest gRPC versions.
+
+## clientv3-grpc1.23: Balancer Overview
+
+`clientv3-grpc1.7` is so tightly coupled with old gRPC interface, that every single gRPC dependency upgrade broke client behavior. Majority of development and debugging efforts were devoted to fixing those client behavior changes. As a result, its implementation has become overly complicated with bad assumptions on server connectivities.
+
+The primary goal of `clientv3-grpc1.23` is to simplify balancer failover logic; rather than maintaining a list of unhealthy endpoints, which may be stale, simply roundrobin to the next endpoint whenever client gets disconnected from the current endpoint. It does not assume endpoint status. Thus, no more complicated status tracking is needed (see *Figure 8* and above). Upgrading to `clientv3-grpc1.23` should be no issue; all changes were internal while keeping all the backward compatibilities.
+
+Internally, when given multiple endpoints, `clientv3-grpc1.23` creates multiple sub-connections (one sub-connection per each endpoint), while `clientv3-grpc1.7` creates only one connection to a pinned endpoint (see *Figure 9*). For instance, in 5-node cluster, `clientv3-grpc1.23` balancer would require 5 TCP connections, while `clientv3-grpc1.7` only requires one. By preserving the pool of TCP connections, `clientv3-grpc1.23` may consume more resources but provide more flexible load balancer with better failover performance. The default balancing policy is round robin but can be easily extended to support other types of balancers (e.g. power of two, pick leader, etc.). `clientv3-grpc1.23` uses gRPC resolver group and implements balancer picker policy, in order to delegate complex balancing work to upstream gRPC. On the other hand, `clientv3-grpc1.7` manually handles each gRPC connection and balancer failover, which complicates the implementation. `clientv3-grpc1.23` implements retry in the gRPC interceptor chain that automatically handles gRPC internal errors and enables more advanced retry policies like backoff, while `clientv3-grpc1.7` manually interprets gRPC errors for retries.
+
+![client-balancer-figure-09](client-balancer-figure-09.png)
+
+### clientv3-grpc1.23: Balancer Limitation
+
+Improvements can be made by caching the status of each endpoint. For instance, balancer can ping each server in advance to maintain a list of healthy candidates, and use this information when doing round-robin. Or when disconnected, balancer can prioritize healthy endpoints. This may complicate the balancer implementation, thus can be addressed in later versions.
+
+Client-side keepalive ping still does not reason about network partitions. Streaming request may get stuck with a partitioned node. Advanced health checking service need to be implemented to understand the cluster membership (see [etcd#8673](https://github.com/etcd-io/etcd/issues/8673) for more detail).
+
+![client-balancer-figure-07](client-balancer-figure-07.png)
+
+Currently, retry logic is handled manually as an interceptor. This may be simplified via [official gRPC retries](https://github.com/grpc/proposal/blob/master/A6-client-retries.md).
