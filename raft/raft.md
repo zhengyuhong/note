@@ -78,6 +78,7 @@ etcd 的所有 apply 操作，幂等性都依赖 consistentIndex 来保证，当
 - https://aphyr.com/posts/313-strong-consistency-models
 - https://jicki.cn/etcd-working-principle/
 - https://zhuanlan.zhihu.com/p/25367435
+- https://blog.csdn.net/weixin_43705457/article/details/120572291
 
 ## 扩展阅读
 
