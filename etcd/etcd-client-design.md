@@ -26,3 +26,7 @@ Languages may differ in how to establish an initial connection (e.g. configure T
 
 `clientv3-grpc1.0` maintains multiple TCP connections when configured with multiple etcd endpoints. Then pick one address and use it to send all client requests. The pinned address is maintained until the client object is closed (see *Figure 1*). When the client receives an error, it randomly picks another and retries.
 
+![client-balancer-figure-01](client-balancer-figure-01.png)
+
+
+
