@@ -22,4 +22,6 @@ etcd also keeps a secondary in-memory [btree](https://en.wikipedia.org/wiki/B-tr
 
 ## 参考
 
+https://etcd.io/docs/v3.5/learning/data_model/
+
 https://www.wenjiangs.com/doc/tmoyvrkip
