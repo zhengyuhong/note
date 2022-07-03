@@ -28,5 +28,14 @@ Languages may differ in how to establish an initial connection (e.g. configure T
 
 ![client-balancer-figure-01](client-balancer-figure-01.png)
 
+### clientv3-grpc1.0: Balancer Limitation[ ](https://etcd.io/docs/v3.5/learning/design-client/#clientv3-grpc10-balancer-limitation)
 
+`clientv3-grpc1.0` opening multiple TCP connections may provide faster balancer failover but requires more resources. The balancer does not understand node’s health status or cluster membership. So, it is possible that balancer gets stuck with one failed or partitioned node.
 
+### clientv3-grpc1.7: Balancer Overview
+
+`clientv3-grpc1.7` maintains only one TCP connection to a chosen etcd server. When given multiple cluster endpoints, a client first tries to connect to them all. As soon as one connection is up, balancer pins the address, closing others (see *Figure 2*). The pinned address is to be maintained until the client object is closed. An error, from server or client network fault, is sent to client error handler (see *Figure 3*).
+
+![client-balancer-figure-02](client-balancer-figure-02.png)
+
+![client-balancer-figure-03](client-balancer-figure-03.png)
