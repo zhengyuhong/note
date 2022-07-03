@@ -64,7 +64,7 @@ type Config struct {
 	// PreVote enables the Pre-Vote algorithm described in raft thesis section
 	// 9.6. This prevents disruption when a node that has been partitioned away
 	// rejoins the cluster.
-	PreVote bool
+	PreVote bool // TODO
 
 	// ReadOnlyOption specifies how the read only request is processed.
 	//
@@ -95,7 +95,34 @@ type Config struct {
 }
 ```
 
+请求大部分由Leader处理，客户端会随机选一个节点发送请求，若该节点不是 `leader` 则有2种处理方式：
+
+- 返回Leader的地址，客户端重新发起请求；
+- 节点作为proxy，将请求发送给Leader。
+
+若请求超时或失败，再随机选择一个节点发送请求。
+
+`etcd/raft` 实现了 `proxy` 的方式，可以通过设置 `Config.DisableProposalForwarding` 禁止。
+
+```go
+func stepFollower(r *raft, m pb.Message) error {
+	switch m.Type {
+	case pb.MsgProp:
+		if r.lead == None {
+			r.logger.Infof("%x no leader at term %d; dropping proposal", r.id, r.Term)
+			return ErrProposalDropped
+		} else if r.disableProposalForwarding {
+			r.logger.Infof("%x not forwarding to leader %x at term %d; dropping proposal", r.id, r.lead, r.Term)
+			return ErrProposalDropped
+		}
+		m.To = r.lead
+		r.send(m)
+        // ...
+}
+```
+
 
 
 ## 参考
 
+https://youjiali1995.github.io/raft/etcd-raft-client-interaction/
